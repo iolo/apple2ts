@@ -27,6 +27,7 @@ Groups:
   memory                 Read or write memory
   soft-switches          Read or trigger soft switches
   drives                 Inspect or modify drives
+  disk-images            Manage temporary uploaded disk images
   input                  Send keyboard, Apple key, or mouse input
   snapshots              Manage debugger snapshots
   save-state             Export or import save states
@@ -38,6 +39,7 @@ Examples:
   npm run cli -- breakpoints create --address 0xC000 --instruction true --halt true
   npm run cli -- memory get --start 0x300 --length 32 --format hex
   npm run cli -- drives mount-file fd1 --file public/disks/blank.po
+  npm run cli -- disk-images upload --file public/disks/blank.po
   npm run cli -- input text --text "PRINT CHR$(4);\\"CATALOG\\""
   npm run cli -- save-state export --output session.a2ts
 `
@@ -225,7 +227,7 @@ const buildUrl = (baseUrl, pathname, query = undefined) => {
   return url
 }
 
-const apiRequest = async (context, method, pathname, { query, body, raw = false } = {}) => {
+const apiRequest = async (context, method, pathname, { query, body, bodyContentType, responseType = "json", raw = false } = {}) => {
   const url = buildUrl(context.server, pathname, query)
   const requestInit = {
     method,
@@ -233,8 +235,13 @@ const apiRequest = async (context, method, pathname, { query, body, raw = false 
   }
 
   if (body !== undefined) {
-    requestInit.headers["Content-Type"] = "application/json"
-    requestInit.body = JSON.stringify(body)
+    if (bodyContentType) {
+      requestInit.headers["Content-Type"] = bodyContentType
+      requestInit.body = body
+    } else {
+      requestInit.headers["Content-Type"] = "application/json"
+      requestInit.body = JSON.stringify(body)
+    }
   }
 
   let response
@@ -242,6 +249,14 @@ const apiRequest = async (context, method, pathname, { query, body, raw = false 
     response = await fetch(url, requestInit)
   } catch (error) {
     fail(`Request failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  if (responseType === "buffer") {
+    if (!response.ok) {
+      const text = await response.text()
+      fail(`HTTP ${response.status}: ${text || response.statusText}`)
+    }
+    return Buffer.from(await response.arrayBuffer())
   }
 
   let payload = null
@@ -288,6 +303,15 @@ const readFileBase64 = async (filePath) => {
   }
 }
 
+const readBinaryFile = async (filePath) => {
+  const resolvedPath = path.resolve(process.cwd(), filePath)
+  return {
+    resolvedPath,
+    filename: path.basename(resolvedPath),
+    data: await fs.readFile(resolvedPath),
+  }
+}
+
 const readUtf8File = async (filePath) => {
   const resolvedPath = path.resolve(process.cwd(), filePath)
   return {
@@ -299,6 +323,12 @@ const readUtf8File = async (filePath) => {
 const writeBase64File = async (filePath, dataBase64) => {
   const resolvedPath = path.resolve(process.cwd(), filePath)
   await fs.writeFile(resolvedPath, Buffer.from(dataBase64, "base64"))
+  return resolvedPath
+}
+
+const writeBinaryFile = async (filePath, data) => {
+  const resolvedPath = path.resolve(process.cwd(), filePath)
+  await fs.writeFile(resolvedPath, data)
   return resolvedPath
 }
 
@@ -711,6 +741,72 @@ const handleDrives = async (context, command, tokens) => {
   }
 }
 
+const encodeDiskImageFilename = (filename) => encodeURIComponent(filename)
+
+const handleDiskImages = async (context, command, tokens) => {
+  const { options, positionals } = parseOptionTokens(tokens)
+
+  switch (command) {
+    case "list":
+      assertNoOptions(options, "disk-images list")
+      assertNoExtraPositionals(positionals, "disk-images list")
+      return apiRequest(context, "GET", "/api/disk-images")
+    case "upload": {
+      assertNoExtraPositionals(positionals, "disk-images upload")
+      const allowedOptions = new Set(["file", "filename"])
+      const unknownOptions = Array.from(options.keys()).filter((key) => !allowedOptions.has(key))
+      if (unknownOptions.length > 0) {
+        fail(`Unexpected options for disk-images upload: ${unknownOptions.map((key) => `--${key}`).join(", ")}`)
+      }
+      const fileData = await readBinaryFile(String(requireOption(options, "file")))
+      const filename = options.has("filename") ? String(options.get("filename")) : fileData.filename
+      return apiRequest(context, "PUT", `/api/disk-images/${encodeDiskImageFilename(filename)}`, {
+        body: fileData.data,
+        bodyContentType: "application/octet-stream",
+      })
+    }
+    case "download":
+    case "get": {
+      const filename = positionals[0]
+      if (!filename) {
+        fail(`disk-images ${command} requires a filename`)
+      }
+      const allowedOptions = new Set(["output"])
+      const unknownOptions = Array.from(options.keys()).filter((key) => !allowedOptions.has(key))
+      if (unknownOptions.length > 0) {
+        fail(`Unexpected options for disk-images ${command}: ${unknownOptions.map((key) => `--${key}`).join(", ")}`)
+      }
+      assertNoExtraPositionals(positionals.slice(1), `disk-images ${command}`)
+      const data = await apiRequest(
+        context,
+        "GET",
+        `/api/disk-images/${encodeDiskImageFilename(filename)}`,
+        { responseType: "buffer", raw: true },
+      )
+      const outputPath = options.has("output") ? String(options.get("output")) : filename
+      const savedPath = await writeBinaryFile(outputPath, data)
+      return {
+        filename,
+        outputPath: savedPath,
+        byteLength: data.length,
+      }
+    }
+    case "delete":
+    case "remove": {
+      const filename = positionals[0]
+      if (!filename) {
+        fail(`disk-images ${command} requires a filename`)
+      }
+      assertNoOptions(options, `disk-images ${command}`)
+      assertNoExtraPositionals(positionals.slice(1), `disk-images ${command}`)
+      await apiRequest(context, "DELETE", `/api/disk-images/${encodeDiskImageFilename(filename)}`, { raw: true })
+      return { deleted: true, filename }
+    }
+    default:
+      fail(`Unknown disk-images command: ${command}`)
+  }
+}
+
 const handleInput = async (context, command, tokens) => {
   const { options, positionals } = parseOptionTokens(tokens)
   assertNoExtraPositionals(positionals, `input ${command}`)
@@ -879,6 +975,8 @@ const dispatch = async (context, group, command, tokens) => {
       return handleSoftSwitches(context, command, tokens)
     case "drives":
       return handleDrives(context, command, tokens)
+    case "disk-images":
+      return handleDiskImages(context, command, tokens)
     case "input":
       return handleInput(context, command, tokens)
     case "snapshots":

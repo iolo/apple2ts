@@ -48,11 +48,12 @@ Optional environment variables:
 
 - `PORT`
 - `COMMAND_TIMEOUT_MS`
+- `APPLE2TS_DISK_IMAGE_DIR`
 
 Example:
 
 ```bash
-PORT=6502 COMMAND_TIMEOUT_MS=15000 node server/server.mjs
+PORT=6502 COMMAND_TIMEOUT_MS=15000 APPLE2TS_DISK_IMAGE_DIR=/var/tmp/apple2ts node server/server.mjs
 ```
 
 ## Architecture
@@ -111,6 +112,10 @@ This keeps client-webapp changes small and avoids introducing a second service.
 - `PATCH /api/drives/{driveId}`
 - `DELETE /api/drives/{driveId}`
 - `POST /api/drives/{driveId}/mount`
+- `GET /api/disk-images`
+- `PUT /api/disk-images/{filename}`
+- `GET /api/disk-images/{filename}`
+- `DELETE /api/disk-images/{filename}`
 - `GET /api/debug/memory`
 - `PUT /api/debug/memory`
 - `GET /api/debug/memory/full`
@@ -159,6 +164,34 @@ Export a save state:
 curl -X POST http://127.0.0.1:6502/api/save-states/export \
   -H 'Content-Type: application/json' \
   -d '{"includeSnapshots":true}'
+```
+
+Upload a disk image with a raw `PUT` body:
+
+```bash
+curl -X PUT http://127.0.0.1:6502/api/disk-images/My%20Disk.woz \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @./My\ Disk.woz
+```
+
+The upload is stored under `APPLE2TS_DISK_IMAGE_DIR` when set. Otherwise it falls back to the bundled disk image directory:
+
+```text
+<repo_root>/dist/disks/<filesystem_safely_escaped_filename>
+```
+
+The response includes a predictable localhost download URL that can be used directly as the client webapp disk-image hash URL.
+
+List uploaded disk images:
+
+```bash
+curl http://127.0.0.1:6502/api/disk-images
+```
+
+Delete an uploaded disk image:
+
+```bash
+curl -X DELETE http://127.0.0.1:6502/api/disk-images/My%20Disk.woz
 ```
 
 ## Current Constraints

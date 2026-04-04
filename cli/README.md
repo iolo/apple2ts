@@ -34,6 +34,7 @@ npm run cli -- --server http://127.0.0.1:6502 machine get
 - `input`: send text, key, key-code, Apple key, or mouse input
 - `snapshots`: list/create/activate/step-back/step-forward
 - `save-state`: export or import `.a2ts` data
+- `disk-images`: list, upload, download, or delete temp disk images
 
 ## Examples
 
@@ -64,11 +65,16 @@ npm run cli -- snapshots create
 npm run cli -- snapshots activate snap:3
 npm run cli -- save-state export --output session.a2ts
 npm run cli -- save-state import --file session.a2ts
+npm run cli -- disk-images list
+npm run cli -- disk-images upload --file public/disks/blank.po
+npm run cli -- disk-images download "blank.po" --output ./blank-copy.po
+npm run cli -- disk-images delete "blank.po"
 ```
 
 ## Notes
 
 - The CLI does not talk to the browser emulator directly. It only uses the server API.
 - A connected browser client is still required for most commands.
+- The `disk-images` group is server-only and does not require a connected browser client.
+  To use uploaded disk images in the emulator, use url hash parameter or mount them with `drives mount-uri` with download url.
 - Output is pretty-printed JSON by default. Use `--json` for compact machine-readable output.
-

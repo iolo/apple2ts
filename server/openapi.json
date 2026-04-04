@@ -25,6 +25,10 @@
       "description": "Mounted disk and media resources"
     },
     {
+      "name": "DiskImages",
+      "description": "Temporary localhost disk-image upload and download URLs"
+    },
+    {
       "name": "Debug",
       "description": "Debugger, CPU, memory, breakpoints, and time travel"
     },
@@ -305,6 +309,79 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/disk-images": {
+      "get": {
+        "tags": ["DiskImages"],
+        "summary": "List temporary disk images",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/DiskImageUploadListResponse"
+          }
+        }
+      }
+    },
+    "/api/disk-images/{filename}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/DiskImageFilename"
+        }
+      ],
+      "get": {
+        "tags": ["DiskImages"],
+        "summary": "Download a temporary disk image by filename",
+        "responses": {
+          "200": {
+            "description": "Disk image bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": ["DiskImages"],
+        "summary": "Upload a temporary disk image using the raw request body",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/DiskImageUploadResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["DiskImages"],
+        "summary": "Delete a temporary disk image by filename",
+        "responses": {
+          "204": {
+            "description": "Disk image deleted"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
@@ -766,6 +843,15 @@
         "schema": {
           "type": "string"
         }
+      },
+      "DiskImageFilename": {
+        "name": "filename",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Original filename, URL-encoded as a single path segment."
       }
     },
     "responses": {
@@ -899,6 +985,26 @@
           }
         }
       },
+      "DiskImageUploadResponse": {
+        "description": "Uploaded disk-image metadata and predictable download URL",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DiskImageUploadEnvelope"
+            }
+          }
+        }
+      },
+      "DiskImageUploadListResponse": {
+        "description": "List of uploaded disk images",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DiskImageUploadListEnvelope"
+            }
+          }
+        }
+      },
       "BadRequest": {
         "description": "Bad request",
         "content": {
@@ -958,6 +1064,62 @@
               }
             },
             "required": ["ok", "error"]
+          }
+        ]
+      },
+      "DiskImageUpload": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "byteLength": {
+            "type": "integer"
+          },
+          "downloadUrl": {
+            "type": "string"
+          }
+        },
+        "required": ["filename", "byteLength", "downloadUrl"]
+      },
+      "DiskImageUploadEnvelope": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EnvelopeBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "data": {
+                "$ref": "#/components/schemas/DiskImageUpload"
+              }
+            },
+            "required": ["ok", "data"]
+          }
+        ]
+      },
+      "DiskImageUploadListEnvelope": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EnvelopeBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DiskImageUpload"
+                }
+              }
+            },
+            "required": ["ok", "data"]
           }
         ]
       },

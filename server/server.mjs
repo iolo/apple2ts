@@ -12,13 +12,19 @@ const serverDir = __dirname
 const host = "127.0.0.1"
 const port = Number(process.env.PORT || 6502)
 const commandTimeoutMs = Number(process.env.COMMAND_TIMEOUT_MS || 10000)
+const diskImageRoutePrefix = "/api/disk-images/"
+const defaultDiskImageDir = path.join(distDir, "disks")
+const diskImageTempDir = process.env.APPLE2TS_DISK_IMAGE_DIR || defaultDiskImageDir
 
 const clients = new Map()
 const pendingCommands = new Map()
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
+  ".dsk": "application/octet-stream",
+  ".do": "application/octet-stream",
   ".gif": "image/gif",
+  ".hdv": "application/octet-stream",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
   ".jpg": "image/jpeg",
@@ -31,8 +37,10 @@ const MIME_TYPES = {
   ".ttf": "font/ttf",
   ".txt": "text/plain; charset=utf-8",
   ".wav": "audio/wav",
+  ".woz": "application/octet-stream",
   ".woff2": "font/woff2",
   ".xml": "application/xml; charset=utf-8",
+  ".po": "application/octet-stream",
 }
 
 const setCorsHeaders = (res) => {
@@ -49,12 +57,16 @@ const writeJson = (res, statusCode, payload) => {
 }
 
 const readJsonBody = async (req) => {
+  const raw = await readRequestBuffer(req)
+  return raw.length ? JSON.parse(raw.toString("utf8")) : {}
+}
+
+const readRequestBuffer = async (req) => {
   const chunks = []
   for await (const chunk of req) {
     chunks.push(chunk)
   }
-  const raw = Buffer.concat(chunks).toString("utf8")
-  return raw.length ? JSON.parse(raw) : {}
+  return Buffer.concat(chunks)
 }
 
 const writeEnvelope = (res, statusCode, data) => {
@@ -669,6 +681,83 @@ const serveFile = async (res, filePath) => {
   }
 }
 
+const getDiskImageFilenameFromPathname = (pathname) => {
+  if (!pathname.startsWith(diskImageRoutePrefix)) {
+    return null
+  }
+
+  const encodedFilename = pathname.slice(diskImageRoutePrefix.length)
+  if (!encodedFilename) {
+    return null
+  }
+
+  try {
+    return decodeURIComponent(encodedFilename)
+  } catch {
+    return null
+  }
+}
+
+const validateDiskImageFilename = (filename) => {
+  if (typeof filename !== "string" || filename.length === 0) {
+    throw new Error("filename is required")
+  }
+  if (filename.includes("\u0000")) {
+    throw new Error("filename must not contain null bytes")
+  }
+}
+
+const escapeDiskImageFilename = (filename) => encodeURIComponent(filename)
+
+const getDiskImagePath = (filename) => path.join(diskImageTempDir, escapeDiskImageFilename(filename))
+
+const getDiskImageUrl = (filename) => `http://${host}:${port}${diskImageRoutePrefix}${escapeDiskImageFilename(filename)}`
+
+const getContentDispositionFilename = (filename) => `inline; filename*=UTF-8''${encodeURIComponent(filename)}`
+
+const getDiskImageResource = async (filename) => {
+  const stat = await fs.stat(getDiskImagePath(filename))
+  return {
+    filename,
+    byteLength: Number(stat.size),
+    downloadUrl: getDiskImageUrl(filename),
+  }
+}
+
+const listDiskImageResources = async () => {
+  let entries = []
+  try {
+    entries = await fs.readdir(diskImageTempDir, { withFileTypes: true })
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return []
+    }
+    throw error
+  }
+
+  const resources = []
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+
+    let filename
+    try {
+      filename = decodeURIComponent(entry.name)
+    } catch {
+      continue
+    }
+
+    const stat = await fs.stat(path.join(diskImageTempDir, entry.name))
+    resources.push({
+      filename,
+      byteLength: Number(stat.size),
+      downloadUrl: getDiskImageUrl(filename),
+    })
+  }
+
+  resources.sort((left, right) => left.filename.localeCompare(right.filename))
+  return resources
+}
+
 const server = createServer(async (req, res) => {
   setCorsHeaders(res)
 
@@ -771,6 +860,83 @@ const server = createServer(async (req, res) => {
       }
 
       writeJson(res, 200, { ok: true })
+      return
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/disk-images") {
+      writeEnvelope(res, 200, await listDiskImageResources())
+      return
+    }
+
+    if (url.pathname.startsWith(diskImageRoutePrefix)) {
+      const filename = getDiskImageFilenameFromPathname(url.pathname)
+      if (!filename) {
+        writeErrorEnvelope(res, 404, "NOT_FOUND", "Disk image not found.")
+        return
+      }
+
+      try {
+        validateDiskImageFilename(filename)
+      } catch (error) {
+        writeErrorEnvelope(
+          res,
+          400,
+          "BAD_REQUEST",
+          error instanceof Error ? error.message : String(error),
+        )
+        return
+      }
+
+      const filePath = getDiskImagePath(filename)
+
+      if (req.method === "PUT") {
+        const body = await readRequestBuffer(req)
+        await fs.mkdir(diskImageTempDir, { recursive: true })
+        await fs.writeFile(filePath, body)
+        writeEnvelope(res, 200, await getDiskImageResource(filename))
+        return
+      }
+
+      if (req.method === "GET") {
+        try {
+          const data = await fs.readFile(filePath)
+          const ext = path.extname(filename).toLowerCase()
+          res.statusCode = 200
+          res.setHeader("Content-Type", MIME_TYPES[ext] || "application/octet-stream")
+          res.setHeader("Content-Disposition", getContentDispositionFilename(filename))
+          res.setHeader("Content-Length", String(data.length))
+          res.end(data)
+        } catch (error) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+            writeErrorEnvelope(res, 404, "NOT_FOUND", "Disk image not found.")
+            return
+          }
+          throw error
+        }
+        return
+      }
+
+      if (req.method === "DELETE") {
+        try {
+          await fs.unlink(filePath)
+          res.statusCode = 204
+          res.end()
+        } catch (error) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+            writeErrorEnvelope(res, 404, "NOT_FOUND", "Disk image not found.")
+            return
+          }
+          throw error
+        }
+        return
+      }
+
+      writeErrorEnvelope(
+        res,
+        405,
+        "METHOD_NOT_ALLOWED",
+        "Use GET to list or download, PUT to upload, or DELETE to remove disk images.",
+      )
       return
     }
 
